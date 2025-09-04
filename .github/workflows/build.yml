@@ -1,0 +1,56 @@
+name: build-binaries
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        python: ['3.10']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install pyinstaller faster-whisper imageio-ffmpeg gradio
+
+      - name: Build single-file binary
+        run: |
+          pyinstaller all_in_one_transcriber_diar.py \
+            --name Transcriber \
+            --onefile --noconfirm --clean \
+            --collect-all faster_whisper \
+            --collect-all ctranslate2 \
+            --collect-all numpy \
+            --collect-data gradio \
+            --hidden-import anyio \
+            --hidden-import starlette \
+            --hidden-import websockets \
+            --hidden-import pydantic \
+            --hidden-import uvicorn
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Transcriber-${{ matrix.os }}
+          path: dist/**
+
+      - name: Create GitHub Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

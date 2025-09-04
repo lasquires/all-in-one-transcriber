@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.spec
+.env
+.venv/
+venv/
+.build/
+build/
+dist/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tooling caches
+.cache/
+pip-wheel-metadata/
+*.log
+
+# App outputs
+transcripts/
+
+# Don’t ever commit secrets/tokens
+*.secret
+*.env
