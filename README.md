@@ -114,7 +114,7 @@ Requirements (one-time):
 
 1. Log into Hugging Face so the model can be pulled. 
    
-2. Accept access on the model page (e.g., `[pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)`) in your HF account.
+2. Accept access on the model page (e.g., [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1)) in your HF account.
 
 Once those are set, check **Enable diarization** and proceed.
 
