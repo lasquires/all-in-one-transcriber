@@ -80,9 +80,8 @@ You can then make a shortcut of this file and place the shortcut on desktop or w
 
 > Everything runs **locally**. Audio is processed on your machine (CUDA GPU if available, otherwise CPU).
 
-![App UI – Local CUDA Speech-to-Text + Diarization](docs/ui.png)
+![App UI – Local CUDA Speech-to-Text + Diarization](docs/ui.jpeg)
 
-> *Tip:* put your screenshot at `docs/ui.png` (or update the path above).
 
 ## 1) Launch the app
 
