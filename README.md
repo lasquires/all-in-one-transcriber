@@ -85,10 +85,7 @@ You can then make a shortcut of this file and place the shortcut on desktop or w
 
 ## 1) Launch the app
 
-```bash
-# From the project folder
-python transcribe.py
-```
+click `run_transcribe.bat` or the shortcut that you made.
 
 The Gradio UI opens in your browser.
 
@@ -115,16 +112,9 @@ Diarization adds “Speaker 1 / Speaker 2 / …” labels.
 
 Requirements (one-time):
 
-1. Install PyTorch with CUDA (or CPU if you prefer).
-2. Install `pyannote.audio` (≥ 3.1 recommended).
-3. Log into Hugging Face so the model can be pulled:
-
-   ```powershell
-   huggingface-cli login
-   # or set a session variable:
-   $env:HF_TOKEN="<your_token_here>"
-   ```
-4. Accept access on the model page (e.g., `pyannote/speaker-diarization-3.1`) in your HF account.
+1. Log into Hugging Face so the model can be pulled. 
+   
+2. Accept access on the model page (e.g., `[pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)`) in your HF account.
 
 Once those are set, check **Enable diarization** and proceed.
 
