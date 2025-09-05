@@ -7,8 +7,8 @@ Here’s a drop-in **README.md** you can ship with your project.
 This guide verifies you’re on an **NVIDIA GPU** machine and then initializes the Conda environment from `environment.yml` (named `transcribe`). An optional block shows how to install Miniconda via PowerShell if Conda isn’t installed yet.
 
 ---
-
-## 0) Verify NVIDIA GPU + driver
+## **Pre-requisites**
+### Verify NVIDIA GPU + driver
 
 Open **PowerShell** and run:
 
@@ -29,7 +29,7 @@ If `nvidia-smi` isn’t found, install/update the NVIDIA driver from GeForce/Stu
 
 ---
 
-## 1) (Optional) Install Miniconda via PowerShell
+### Install Miniconda via PowerShell
 
 If `conda` isn’t recognized:
 
@@ -47,12 +47,14 @@ conda init powershell
 
 ---
 
-## 2) Create the environment from `environment.yml`
+## **Setup**
+### Create the environment from `environment.yml`
 
 From the project folder (the one containing `environment.yml`):
 
 ```powershell
-# Create the env (name is defined inside environment.yml)
+# Create the env (name is defined inside environment.yml) 
+# (this takes about 5 minutes)
 conda env create -f .\environment.yml
 
 # Activate it
@@ -66,7 +68,7 @@ You should see `CUDA available: True` on a working NVIDIA machine.
 
 ---
 
-## 3) First run
+## Run
 
 From the project folder find and click `run_transcribe.bat` 
 
