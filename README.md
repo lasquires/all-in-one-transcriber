@@ -68,66 +68,7 @@ You should see `CUDA available: True` on a working NVIDIA machine.
 
 ## 3) First run
 
-From the project folder:
+From the project folder find and click `run_transcribe.bat` 
 
-```powershell
-conda activate transcribe
-python .\transcribe.py
-```
-
----
-
-## 4) Handy one-shot batch launcher (optional)
-
-Create a `run_transcribe.bat` next to `trancribe.py`:
-
-```bat
-@echo off
-SET "CONDA_PATH=%USERPROFILE%\miniconda3"
-CALL "%CONDA_PATH%\Scripts\activate.bat"
-CALL conda activate transcribe
-CD /d %~dp0
-python transcribe.py
-pause
-```
-
-> If Conda is installed somewhere else (e.g., `C:\ProgramData\miniconda3` or `C:\Users\<you>\anaconda3`), update `CONDA_PATH`.
-
----
-
-## 5) Troubleshooting (quick)
-
-* **`nvidia-smi` not found** → Install/repair NVIDIA driver; ensure it’s an NVIDIA GPU.
-* **`CUDA available: False`** → Update NVIDIA driver (≥ 531.xx), reboot, recheck.
-
-
-  *(Add any extras you need; if you add a new dependency, re-export or update `environment.yml` for teammates.)*
-* **Conda not recognized** → Open a new PowerShell window after `conda init powershell`, or call Conda explicitly:
-
-  ```powershell
-  & "$env:USERPROFILE\miniconda3\condabin\conda.bat" env list
-  ```
-
----
-
-## 6) Re-creating or updating the env
-
-When `environment.yml` changes:
-
-```powershell
-# Recreate cleanly (removes the old env)
-conda remove -n transcribe --all -y
-conda env create -f .\environment.yml
-conda activate transcribe
-```
-
-Or update in place (lighter, may not resolve major changes):
-
-```powershell
-conda env update -f .\environment.yml --prune
-```
-
----
-
-That’s it—once you see `CUDA available: True` and the app starts without import errors, you’re good to go.
+You can then make a shortcut of this file and place the shortcut on desktop or wherever.
 
