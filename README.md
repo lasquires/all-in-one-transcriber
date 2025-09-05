@@ -85,7 +85,7 @@ You can then make a shortcut of this file and place the shortcut on desktop or w
 
 ## 1) Launch the app
 
-click `run_transcribe.bat` or the shortcut that you made.
+Click `run_transcribe.bat` or the shortcut that you made.
 
 The Gradio UI opens in your browser.
 
@@ -116,7 +116,7 @@ Requirements (one-time):
    
 2. Accept access on the model page (e.g., [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1)) in your HF account.
 
-3. Press `Profile --> Access Tokens --> Create new token`, grant appropriate permissions and save the token.
+3. Press `Profile → Access Tokens → Create new token`, grant appropriate permissions and save the token.
 
 Once those are set, check **Enable diarization** and proceed.
 
@@ -168,23 +168,6 @@ The app also prints the full path to the output folder in **Status & logs**.
 
 ---
 
-## CLI usage (optional)
-
-If you prefer the terminal, you can run the same pipeline without the UI. Example:
-
-```bash
-python transcribe.py "path/to/audio.wav" \
-  --model tiny \
-  --language auto \
-  --device auto \
-  --diarize false \
-  --outdir outputs
-```
-
-> Flags may differ if you’ve customized the CLI—run `python transcribe.py -h` to see all options.
-
----
-
 ## Troubleshooting
 
 * **“pyannote.audio is not installed”**
@@ -229,6 +212,3 @@ python transcribe.py "path/to/audio.wav" \
 4. **Writers** → SRT, VTT, TXT, and JSON files are generated per input and saved to an output folder.
 5. **UI** → Gradio displays progress, previews text, and provides download links.
 
----
-
-If you want, I can drop this into your existing README and wire up the screenshot path you’re using.
