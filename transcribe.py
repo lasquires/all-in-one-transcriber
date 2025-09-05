@@ -330,10 +330,10 @@ def explain(err: Exception) -> str:
 
 # -------------------- callbacks --------------------
 def transcribe(
-    audio_file,
+    audio_files,
     model_name,
     language,
-    enable_diar,         # toggle
+    enable_diar,
     hf_token,
     remember_token,
     device_choice,
@@ -346,27 +346,18 @@ def transcribe(
 
     if not ffmpeg_installed():
         logs.append("FFmpeg not found on PATH. Please install FFmpeg (and restart the terminal).")
-        try: gr.Error("FFmpeg missing") 
+        try: gr.Error("FFmpeg missing")
         except: pass
+        # keep downloads hidden
         return ("", None, "", None, None, None, None, "\n".join(logs))
 
-    if audio_file is None:
-        logs.append("Please upload/select an audio file.")
+    # Normalize to a list of paths (gradio gives list[dict] when file_count='multiple')
+    if not audio_files:
+        logs.append("Please upload/select at least one audio file.")
         try: gr.Error("No audio file selected")
         except: pass
         return ("", None, "", None, None, None, None, "\n".join(logs))
-
-    in_path = audio_file["name"] if isinstance(audio_file, dict) and "name" in audio_file else audio_file
-
-    # remember original path for output naming, and convert to clean 16k mono WAV
-    original_path = in_path
-    try:
-        in_path = prepare_audio_for_processing(in_path)
-    except Exception as e:
-        logs.append(f"FFmpeg pre-conversion failed: {e}")
-        try: gr.Warning("FFmpeg pre-conversion failed; using original input instead.")
-        except: pass
-        in_path = original_path
+    file_items = audio_files if isinstance(audio_files, list) else [audio_files]
 
     token_used = (hf_token or "").strip()
     if enable_diar and not token_used:
@@ -386,6 +377,7 @@ def transcribe(
 
     device, compute_type = resolve_device_and_compute(device_choice, compute_type_choice, logs)
 
+    # Load once; reuse for all files
     try:
         model = load_whisper(model_name, device, compute_type)
         logs.append(f"Loaded Whisper model '{model_name}' on {device} ({compute_type}).")
@@ -395,75 +387,119 @@ def transcribe(
         except: pass
         return ("", None, "", None, None, None, None, "\n".join(logs))
 
-    # Transcribe
-    try:
-        lang_arg = None if language == "auto" else language
-        seg_iter, info = model.transcribe(
-            in_path,
-            language=lang_arg,
-            vad_filter=vad_filter,
-            word_timestamps=word_timestamps,
-            beam_size=int(beam_size),
-        )
-        asr_segments = []
-        for seg in seg_iter:
-            e = {"start": float(seg.start), "end": float(seg.end), "text": seg.text.strip()}
-            if word_timestamps and seg.words:
-                e["words"] = [{"start": float(w.start), "end": float(w.end), "word": w.word} for w in seg.words if w]
-            asr_segments.append(e)
-        logs.append(f"Transcription complete. Duration: {round(info.duration,2)} s. Detected language: {info.language}.")
-    except Exception as e:
-        logs.append(f"Transcription failed: {explain(e)}")
-        try: gr.Error("Transcription failed")
-        except: pass
+    total_duration = 0.0
+    detected_langs = set()
+    html_sections: List[str] = []
+    srt_paths: List[str] = []
+    vtt_paths: List[str] = []
+    txt_paths: List[str] = []
+    json_paths: List[str] = []
+
+    for item in file_items:
+        in_path = item.get("name") if isinstance(item, dict) else item
+        original_path = in_path
+
+        # Pre-convert for robust processing
+        try:
+            in_path = prepare_audio_for_processing(in_path)
+        except Exception as e:
+            logs.append(f"[{original_path}] FFmpeg pre-conversion failed: {e} (using original input).")
+            try: gr.Warning("FFmpeg pre-conversion failed; using original input instead.")
+            except: pass
+            in_path = original_path
+
+        # --- Transcribe this file ---
+        try:
+            lang_arg = None if language == "auto" else language
+            seg_iter, info = model.transcribe(
+                in_path,
+                language=lang_arg,
+                vad_filter=vad_filter,
+                word_timestamps=word_timestamps,
+                beam_size=int(beam_size),
+            )
+            asr_segments = []
+            for seg in seg_iter:
+                e = {"start": float(seg.start), "end": float(seg.end), "text": seg.text.strip()}
+                if word_timestamps and seg.words:
+                    e["words"] = [{"start": float(w.start), "end": float(w.end), "word": w.word} for w in seg.words if w]
+                asr_segments.append(e)
+            total_duration += float(info.duration)
+            if info.language: detected_langs.add(info.language)
+            logs.append(f"[{original_path}] Transcription complete. Duration: {round(info.duration,2)} s. Detected language: {info.language}.")
+        except Exception as e:
+            logs.append(f"[{original_path}] Transcription failed: {explain(e)}")
+            try: gr.Error("Transcription failed")
+            except: pass
+            # Skip to next file
+            continue
+
+        # --- Diarization (optional) ---
+        diar_segments: List[Dict] = []
+        if enable_diar:
+            try:
+                diar_segments = run_diarization_pyannote(in_path, token_used)
+                logs.append(f"[{original_path}] Diarization produced {len(diar_segments)} segments.")
+            except Exception as e:
+                logs.append(f"[{original_path}] Diarization failed: {explain(e)}")
+                try: gr.Warning("Diarization failed; transcript will not be speaker-labeled.")
+                except: pass
+
+        # --- Merge & write outputs for this file ---
+        asr_segments = assign_speakers(asr_segments, diar_segments, include_speakers=enable_diar)
+        merged = merge_consecutive(asr_segments, include_speakers=enable_diar)
+
+        base = os.path.splitext(os.path.basename(original_path))[0]
+        out_dir = os.path.join(os.path.dirname(original_path), f"{base}_outputs")
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            srt_path  = os.path.join(out_dir, f"{base}.srt")
+            vtt_path  = os.path.join(out_dir, f"{base}.vtt")
+            txt_path  = os.path.join(out_dir, f"{base}.txt")
+            json_path = os.path.join(out_dir, f"{base}.json")
+
+            with open(srt_path, "w", encoding="utf-8") as f:
+                f.write(write_srt(merged, include_speakers=enable_diar))
+            with open(vtt_path, "w", encoding="utf-8") as f:
+                f.write(write_vtt(merged, include_speakers=enable_diar))
+            with open(txt_path, "w", encoding="utf-8") as f:
+                for s in merged:
+                    if enable_diar and s.get("speaker"):
+                        f.write(f"{s['speaker']}: {s['text']}\n")
+                    else:
+                        f.write(f"{s['text']}\n")
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump({"language": list(detected_langs)[-1] if detected_langs else None,
+                           "duration": info.duration, "segments": merged}, f, ensure_ascii=False, indent=2)
+
+            srt_paths.append(srt_path); vtt_paths.append(vtt_path)
+            txt_paths.append(txt_path); json_paths.append(json_path)
+
+            # Per-file HTML section
+            section_title = f"<h3>{html_escape(base)}</h3>"
+            html_sections.append(section_title + render_html(merged, include_speakers=enable_diar))
+            logs.append(f"[{original_path}] Saved outputs in: {out_dir}")
+        except Exception as e:
+            logs.append(f"[{original_path}] Failed to save outputs: {explain(e)}")
+
+    # If nothing succeeded:
+    if not (srt_paths or vtt_paths or txt_paths or json_paths or html_sections):
         return ("", None, "", None, None, None, None, "\n".join(logs))
 
-    # Diarization (labels only if enabled)
-    diar_segments: List[Dict] = []
-    if enable_diar:
-        try:
-            diar_segments = run_diarization_pyannote(in_path, token_used)
-            logs.append(f"Diarization produced {len(diar_segments)} segments.")
-        except Exception as e:
-            logs.append(f"Diarization failed: {explain(e)}")
-            try: gr.Warning("Diarization failed; transcript will not be speaker-labeled.")
-            except: pass
+    # Compose and reveal
+    lang_display = (list(detected_langs)[0] if len(detected_langs) == 1 else "multiple")
+    html_preview = "\n<hr/>\n".join(html_sections)
 
-    # Merge & write
-    asr_segments = assign_speakers(asr_segments, diar_segments, include_speakers=enable_diar)
-    merged = merge_consecutive(asr_segments, include_speakers=enable_diar)
-
-    # keep output names based on the original file
-    base = os.path.splitext(os.path.basename(original_path))[0]
-    out_dir = os.path.join(os.path.dirname(original_path), f"{base}_outputs")
-    try:
-        os.makedirs(out_dir, exist_ok=True)
-        srt_path  = os.path.join(out_dir, f"{base}.srt")
-        vtt_path  = os.path.join(out_dir, f"{base}.vtt")
-        txt_path  = os.path.join(out_dir, f"{base}.txt")
-        json_path = os.path.join(out_dir, f"{base}.json")
-
-        with open(srt_path, "w", encoding="utf-8") as f:
-            f.write(write_srt(merged, include_speakers=enable_diar))
-        with open(vtt_path, "w", encoding="utf-8") as f:
-            f.write(write_vtt(merged, include_speakers=enable_diar))
-        with open(txt_path, "w", encoding="utf-8") as f:
-            for s in merged:
-                if enable_diar and s.get("speaker"):
-                    f.write(f"{s['speaker']}: {s['text']}\n")
-                else:
-                    f.write(f"{s['text']}\n")
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump({"language": info.language, "duration": info.duration, "segments": merged}, f, ensure_ascii=False, indent=2)
-
-        logs.append(f"Saved outputs in: {out_dir}")
-        html_preview = render_html(merged, include_speakers=enable_diar)
-        return (info.language, round(info.duration,2), html_preview, srt_path, vtt_path, txt_path, json_path, "\n".join(logs))
-    except Exception as e:
-        logs.append(f"Failed to save outputs: {explain(e)}")
-        try: gr.Error("Saving outputs failed")
-        except: pass
-        return (info.language, round(info.duration,2), "", None, None, None, None, "\n".join(logs))
+    return (
+        lang_display,
+        round(total_duration, 2),
+        html_preview,
+        gr.update(value=srt_paths,  visible=True),
+        gr.update(value=vtt_paths,  visible=True),
+        gr.update(value=txt_paths,  visible=True),
+        gr.update(value=json_paths, visible=True),
+        "\n".join(logs),
+    )
 
 
 def persist_token(hf_token: str, remember: bool):
@@ -502,7 +538,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="blue")) as demo:
 
     with gr.Row():
         with gr.Column(scale=1):
-            fk = dict(file_count="single", file_types=[".wav",".mp3",".m4a",".flac",".ogg",".wma",".mp4",".mkv"], label="Audio file")
+            fk = dict(file_count="multiple", file_types=[".wav",".mp3",".m4a",".flac",".ogg",".wma",".mp4",".mkv"], label="Audio file")
             maybe_info(fk, "Audio/video accepted; audio is extracted from video.")
             audio = gr.File(**fk)
 
@@ -550,11 +586,12 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="blue")) as demo:
             lang_out = gr.Textbox(label="Detected language", interactive=False)
             dur_out  = gr.Number(label="Audio duration (s)", interactive=False, precision=2)
             html_out = gr.HTML(label="Transcript")
-            gr.Markdown("**Downloads**")
-            srt_out  = gr.File(label="SRT")
-            vtt_out  = gr.File(label="VTT")
-            txt_out  = gr.File(label="TXT")
-            json_out = gr.File(label="JSON")
+            with gr.Accordion("Downloads", open=False):
+                srt_out  = gr.File(label="SRT",  file_count="multiple", visible=False)
+                vtt_out  = gr.File(label="VTT",  file_count="multiple", visible=False)
+                txt_out  = gr.File(label="TXT",  file_count="multiple", visible=False)
+                json_out = gr.File(label="JSON", file_count="multiple", visible=False)
+
             with gr.Accordion("Status & logs", open=False):
                 status_md = gr.Markdown("")
 
