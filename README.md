@@ -194,21 +194,4 @@ The app also prints the full path to the output folder in **Status & logs**.
 * **FFmpeg not found**
   Install FFmpeg or let the app auto-provision (if enabled). Restart your terminal after install so PATH updates apply.
 
-* **Token problems**
-  Re-login: `huggingface-cli login`.
-  To set per-session in PowerShell:
-
-  ```powershell
-  $env:HF_TOKEN="<your_token_here>"
-  ```
-
----
-
-## How it works (under the hood)
-
-1. **Load audio** → decoded via FFmpeg (format-agnostic).
-2. **ASR (Whisper via faster-whisper)** → transcribes to timestamped segments on **CUDA** (float16) when available, else CPU.
-3. **(Optional) Diarization** → pyannote pipeline assigns speaker labels; segments are aligned/merged with ASR results.
-4. **Writers** → SRT, VTT, TXT, and JSON files are generated per input and saved to an output folder.
-5. **UI** → Gradio displays progress, previews text, and provides download links.
 
