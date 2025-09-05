@@ -87,7 +87,7 @@ You can then make a shortcut of this file and place the shortcut on desktop or w
 
 ```bash
 # From the project folder
-python app.py
+python transcribe.py
 ```
 
 The Gradio UI opens in your browser.
@@ -181,7 +181,7 @@ The app also prints the full path to the output folder in **Status & logs**.
 If you prefer the terminal, you can run the same pipeline without the UI. Example:
 
 ```bash
-python app.py "path/to/audio.wav" \
+python transcribe.py "path/to/audio.wav" \
   --model tiny \
   --language auto \
   --device auto \
@@ -189,7 +189,7 @@ python app.py "path/to/audio.wav" \
   --outdir outputs
 ```
 
-> Flags may differ if you’ve customized the CLI—run `python app.py -h` to see all options.
+> Flags may differ if you’ve customized the CLI—run `python transcribe.py -h` to see all options.
 
 ---
 
