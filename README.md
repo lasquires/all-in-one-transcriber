@@ -40,7 +40,7 @@ winget install -e --id Anaconda.Miniconda3
 # Open a new PowerShell window (important), then initialize conda for PS:
 conda init powershell
 
-# Close and reopen PowerShell so your profile changes take effect
+# Close and re-open PowerShell so your profile changes take effect
 ```
 
 > If you cannot use winget, download Miniconda from the official site and run the installer. After installing, run `conda init powershell`, then restart PowerShell.
@@ -57,8 +57,6 @@ From the project folder (the one containing `environment.yml`):
 # (this takes about 5 minutes)
 conda env create -f .\environment.yml
 
-# Activate it
-conda activate transcribe
 
 # (Optional) Verify torch build & CUDA availability
 python -c "import torch; print('Torch:', torch.__version__, 'CUDA build:', torch.version.cuda); print('CUDA available:', torch.cuda.is_available())"
@@ -68,7 +66,7 @@ You should see `CUDA available: True` on a working NVIDIA machine.
 
 ---
 
-## Run
+## **Run**
 
 From the project folder find and click `run_transcribe.bat` 
 
