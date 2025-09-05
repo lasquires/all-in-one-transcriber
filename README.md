@@ -57,6 +57,7 @@ From the project folder (the one containing `environment.yml`):
 # (this takes about 5 minutes)
 conda env create -f .\environment.yml
 
+conda activate transcribe
 
 # (Optional) Verify torch build & CUDA availability
 python -c "import torch; print('Torch:', torch.__version__, 'CUDA build:', torch.version.cuda); print('CUDA available:', torch.cuda.is_available())"
