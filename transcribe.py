@@ -531,6 +531,33 @@ def toggle_token_ui(enabled: bool):
     vis = gr.update(visible=bool(enabled))
     return vis, vis, vis, vis
 
+def make_audio_input():
+    # Build kwargs once (adds tooltip on newer Gradio that supports `info`)
+    kwargs = {
+        "file_types": [".wav",".mp3",".m4a",".flac",".ogg",".wma",".mp4",".mkv"],
+        "label": "Audio files",
+    }
+    try:
+        import inspect
+        if "info" in inspect.signature(gr.File.__init__).parameters:
+            kwargs["info"] = "Audio/video accepted; audio is extracted from video."
+    except Exception:
+        pass
+
+    # Newer Gradio: gr.File supports file_count="multiple"
+    try:
+        import inspect
+        if "file_count" in inspect.signature(gr.File.__init__).parameters:
+            return gr.File(file_count="multiple", **kwargs)
+    except Exception:
+        pass
+
+    # Older Gradio: use gr.Files (multi-uploader component)
+    if hasattr(gr, "Files"):
+        return gr.Files(**kwargs)
+
+    # Last resort: single-file input with a hint
+    return gr.File(label="Audio file (single — upgrade Gradio for multiple)")
 
 # -------------------- UI --------------------
 with gr.Blocks(theme=gr.themes.Soft(primary_hue="blue")) as demo:
@@ -538,9 +565,8 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="blue")) as demo:
 
     with gr.Row():
         with gr.Column(scale=1):
-            fk = dict(file_count="multiple", file_types=[".wav",".mp3",".m4a",".flac",".ogg",".wma",".mp4",".mkv"], label="Audio file")
-            maybe_info(fk, "Audio/video accepted; audio is extracted from video.")
-            audio = gr.File(**fk)
+            audio = make_audio_input()
+
 
             mk = dict(choices=MODEL_CHOICES, value="small", label="ASR model")
             maybe_info(mk, "Accuracy vs speed trade-off. ‘small’ is fast; ‘large-v3’ best accuracy (needs VRAM).")
