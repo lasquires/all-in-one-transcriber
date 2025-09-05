@@ -29,7 +29,7 @@ If `nvidia-smi` isn’t found, install/update the NVIDIA driver from GeForce/Stu
 
 ---
 
-### Install Miniconda via PowerShell
+### Install Miniconda via PowerShell --- ***Skip if conda already installed***
 
 If `conda` isn’t recognized:
 
