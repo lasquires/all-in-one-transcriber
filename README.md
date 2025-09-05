@@ -116,7 +116,7 @@ Requirements (one-time):
    
 2. Accept access on the model page (e.g., [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1)) in your HF account.
 
-3. Press `Profile → Access Tokens → Create new token → Read → *Name the token* → Create token`.
+3. Press `Profile` → `Access Tokens` → `Create new token` → `Read` → *`Name the token`* → `Create token`.
 
 4. Copy your new token, then on the transcription webpage, check `Enable diarization` and paste the copied token into the slot.
 
