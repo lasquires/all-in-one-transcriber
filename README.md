@@ -116,6 +116,8 @@ Requirements (one-time):
    
 2. Accept access on the model page (e.g., [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1)) in your HF account.
 
+3. Press `Profile --> Access Tokens --> Create new token`, grant appropriate permissions and save the token.
+
 Once those are set, check **Enable diarization** and proceed.
 
 > Note: diarization expects **mono, 16 kHz** audio. The app will resample for you, but very noisy audio can hurt quality.
