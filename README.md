@@ -64,6 +64,7 @@ python -c "import torch; print('Torch:', torch.__version__, 'CUDA build:', torch
 ```
 
 You should see `CUDA available: True` on a working NVIDIA machine.
+*Note: I realize now that this env uses a cuda driver for the nvidia 3000 series. You might need to see which version of cuda your gpu supports.*
 
 ---
 
