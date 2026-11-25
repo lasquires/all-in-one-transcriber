@@ -18,6 +18,7 @@ from typing import List, Dict, Optional, Tuple
 from html import escape as html_escape
 
 import gradio as gr
+import ctranslate2
 from faster_whisper import WhisperModel
 
 # Optional diarization
@@ -38,9 +39,11 @@ LANG_CHOICES = [
     "hr","ro","bg","uk","ru","tr","ar","he","fa","hi","bn","ta","te","ml","ur","id","vi",
     "th","ko","ja","zh"
 ]
-MODEL_CHOICES  = ["tiny","base","small","medium","large-v2","large-v3","distil-large-v3"]
+MODEL_CHOICES  = ["auto","tiny","base","small","medium","large-v2","large-v3","turbo","distil-large-v3","distil-large-v3.5"]
+MODEL_IDS = {"turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+             "distil-large-v3.5": "distil-whisper/distil-large-v3.5-ct2"}
 DEVICE_CHOICES = ["auto","cuda","cpu"]
-DTYPE_CHOICES  = ["float16","float32","int8_float16","int8"]
+DTYPE_CHOICES  = ["auto","float16","float32","int8_float16","int8"]
 
 
 # -------------------- gradio compat (for tooltips) --------------------
@@ -74,9 +77,21 @@ def torch_cuda_available() -> bool:
     except Exception:
         return False
 
+def ffmpeg_path() -> str:
+    import shutil
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return "ffmpeg"
+
+
 def ffmpeg_installed() -> bool:
     try:
-        r = subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        r = subprocess.run([ffmpeg_path(), "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
         return r.returncode == 0
     except Exception:
         return False
@@ -117,7 +132,7 @@ def prepare_audio_for_processing(src_path: str) -> str:
         pass
 
     cmd = [
-        "ffmpeg", "-y", "-i", str(p),
+        ffmpeg_path(), "-y", "-i", str(p),
         "-vn", "-ac", "1", "-ar", "16000",
         "-f", "wav", str(out_path)
     ]
@@ -160,19 +175,26 @@ PYANNOTE_CACHE: Dict[str, object] = {}
 def load_whisper(model_name: str, device: str, compute_type: str):
     key = (model_name, device, compute_type)
     if key in MODEL_CACHE: return MODEL_CACHE[key]
-    mdl = WhisperModel(model_name, device=device, compute_type=compute_type)
+    mdl = WhisperModel(MODEL_IDS.get(model_name, model_name), device=device, compute_type=compute_type)
     MODEL_CACHE[key] = mdl
     return mdl
 
-def load_pyannote(hf_token: Optional[str]):
+def load_pyannote(hf_token: Optional[str], device: str = "cpu"):
     if not HAVE_PYANNOTE:
         raise RuntimeError("pyannote.audio is not installed. Install it or disable diarization.")
     token = (hf_token or os.getenv("HUGGINGFACE_TOKEN") or "").strip()
     if not token:
         raise RuntimeError("pyannote diarization requires a free Hugging Face token (scope: read).")
-    if "pipeline" in PYANNOTE_CACHE: return PYANNOTE_CACHE["pipeline"]
+    if device in PYANNOTE_CACHE: return PYANNOTE_CACHE[device]
 
-    pipe = PyannotePipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=token)
+    # pyannote 4.x uses token= and a new result type; keep 3.x compatible.
+    modern = "token" in inspect.signature(PyannotePipeline.from_pretrained).parameters
+    model_id = ("pyannote/speaker-diarization-community-1" if modern
+                else "pyannote/speaker-diarization-3.1")
+    kwargs = {"token": token} if modern else {"use_auth_token": token}
+    pipe = PyannotePipeline.from_pretrained(model_id, **kwargs)
+    if pipe is None:
+        raise RuntimeError(f"Could not load {model_id}; accept model access terms on Hugging Face.")
 
     # ↓ avoid cat() shape mismatch on odd-length decoded chunks
     try:
@@ -185,17 +207,29 @@ def load_pyannote(hf_token: Optional[str]):
 
     try:
         import torch
-        if torch.cuda.is_available(): pipe.to(torch.device("cuda"))
+        if device == "cuda" and torch.cuda.is_available(): pipe.to(torch.device("cuda"))
     except Exception:
         pass
-    PYANNOTE_CACHE["pipeline"] = pipe
+    PYANNOTE_CACHE[device] = pipe
     return pipe
 
 
 # -------------------- core processing --------------------
-def run_diarization_pyannote(audio_path: str, token: Optional[str]) -> List[Dict]:
-    pipe = load_pyannote(token)
-    diar = pipe(audio_path)
+def run_diarization_pyannote(audio_path: str, token: Optional[str], device: str = "cpu") -> List[Dict]:
+    pipe = load_pyannote(token, device)
+    # Decode using the existing ASR backend; avoid TorchCodec/FFmpeg DLL issues.
+    import torch
+    from faster_whisper.audio import decode_audio
+    samples = decode_audio(audio_path, sampling_rate=16000)
+    source = {"waveform": torch.from_numpy(samples).unsqueeze(0), "sample_rate": 16000}
+    try:
+        result = pipe(source)
+    except (RuntimeError, OSError):
+        if device != "cuda":
+            raise
+        PYANNOTE_CACHE.pop(device, None)
+        result = load_pyannote(token, "cpu")(source)
+    diar = getattr(result, "exclusive_speaker_diarization", result)
     out = []
     for seg, _, spk in diar.itertracks(yield_label=True):
         out.append({"start": float(seg.start), "end": float(seg.end), "speaker": str(spk)})
@@ -298,17 +332,55 @@ def render_html(segs: List[Dict], include_speakers: bool) -> str:
     return "\n".join(html)
 
 def resolve_device_and_compute(user_device: str, compute_type: str, log: List[str]) -> Tuple[str,str]:
-    dev = user_device
-    if user_device == "auto":
-        if torch_cuda_available():
-            dev = "cuda"; log.append("Device auto-detected: CUDA GPU.")
+    dev = "cpu"
+    supported = set()
+    if user_device != "cpu":
+        try:
+            if ctranslate2.get_cuda_device_count() > 0:
+                supported = set(ctranslate2.get_supported_compute_types("cuda", 0))
+                if supported:
+                    dev = "cuda"
+        except Exception as e:
+            log.append(f"CUDA probe failed: {e}")
+        if dev == "cuda":
+            log.append("CTranslate2 detected a CUDA-compatible GPU.")
+            try:
+                r = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total",
+                                    "--format=csv,noheader"], capture_output=True,
+                                   text=True, timeout=3, check=True)
+                log.append("NVIDIA hardware (all adapters): " + r.stdout.strip())
+            except (OSError, subprocess.SubprocessError):
+                pass
         else:
-            dev = "cpu";  log.append("Device auto-detected: CPU (no CUDA visible).")
-    if dev == "cuda" and not torch_cuda_available():
-        log.append("Requested CUDA, but CUDA not available. Falling back to CPU."); dev = "cpu"
-    if dev == "cpu" and compute_type in ("float16","int8_float16"):
-        log.append("Adjusted precision to 'int8' for CPU (float16 not supported on CPU)."); compute_type = "int8"
+            log.append("No usable CUDA device detected; using CPU.")
+    if dev == "cuda":
+        if compute_type == "auto" or compute_type not in supported:
+            for candidate in ("int8_float16", "float16", "int8", "float32"):
+                if candidate in supported:
+                    compute_type = candidate
+                    break
+            else:
+                compute_type = "auto"
+    elif compute_type != "float32":
+        compute_type = "int8"
     return dev, compute_type
+
+
+def read_asr(model, path, language, vad_filter, word_timestamps, beam_size):
+    seg_iter, info = model.transcribe(
+        path, language=None if language == "auto" else language,
+        vad_filter=vad_filter, word_timestamps=word_timestamps,
+        beam_size=int(beam_size),
+    )
+    segments = []
+    for seg in seg_iter:
+        entry = {"start": float(seg.start), "end": float(seg.end), "text": seg.text.strip()}
+        if word_timestamps and seg.words:
+            entry["words"] = [{"start": float(w.start), "end": float(w.end), "word": w.word}
+                              for w in seg.words if w]
+        segments.append(entry)
+    return segments, info
+
 
 def explain(err: Exception) -> str:
     msg = str(err)
@@ -376,10 +448,24 @@ def transcribe(
             logs.append(f"Could not save token: {e}")
 
     device, compute_type = resolve_device_and_compute(device_choice, compute_type_choice, logs)
+    if model_name == "auto":
+        model_name = "turbo" if device == "cuda" else "small"
+    if model_name.startswith("distil-") and language not in ("auto", "en"):
+        logs.append("Distilled Whisper is English-only. Switching to multilingual turbo.")
+        model_name = "turbo"
+    elif model_name.startswith("distil-"):
+        language = "en"
 
     # Load once; reuse for all files
     try:
-        model = load_whisper(model_name, device, compute_type)
+        try:
+            model = load_whisper(model_name, device, compute_type)
+        except (RuntimeError, OSError, ValueError) as e:
+            if device != "cuda":
+                raise
+            logs.append(f"GPU model load failed ({e}); retrying on CPU/int8.")
+            device, compute_type = "cpu", "int8"
+            model = load_whisper(model_name, device, compute_type)
         logs.append(f"Loaded Whisper model '{model_name}' on {device} ({compute_type}).")
     except Exception as e:
         logs.append(f"Failed to load Whisper: {explain(e)}")
@@ -410,20 +496,16 @@ def transcribe(
 
         # --- Transcribe this file ---
         try:
-            lang_arg = None if language == "auto" else language
-            seg_iter, info = model.transcribe(
-                in_path,
-                language=lang_arg,
-                vad_filter=vad_filter,
-                word_timestamps=word_timestamps,
-                beam_size=int(beam_size),
-            )
-            asr_segments = []
-            for seg in seg_iter:
-                e = {"start": float(seg.start), "end": float(seg.end), "text": seg.text.strip()}
-                if word_timestamps and seg.words:
-                    e["words"] = [{"start": float(w.start), "end": float(w.end), "word": w.word} for w in seg.words if w]
-                asr_segments.append(e)
+            try:
+                asr_segments, info = read_asr(model, in_path, language, vad_filter, word_timestamps, beam_size)
+            except (RuntimeError, OSError) as e:
+                if device != "cuda":
+                    raise
+                logs.append(f"GPU inference failed ({e}); retrying this file on CPU/int8.")
+                MODEL_CACHE.pop((model_name, device, compute_type), None)
+                device, compute_type = "cpu", "int8"
+                model = load_whisper(model_name, device, compute_type)
+                asr_segments, info = read_asr(model, in_path, language, vad_filter, word_timestamps, beam_size)
             total_duration += float(info.duration)
             if info.language: detected_langs.add(info.language)
             logs.append(f"[{original_path}] Transcription complete. Duration: {round(info.duration,2)} s. Detected language: {info.language}.")
@@ -438,7 +520,7 @@ def transcribe(
         diar_segments: List[Dict] = []
         if enable_diar:
             try:
-                diar_segments = run_diarization_pyannote(in_path, token_used)
+                diar_segments = run_diarization_pyannote(in_path, token_used, device)
                 logs.append(f"[{original_path}] Diarization produced {len(diar_segments)} segments.")
             except Exception as e:
                 logs.append(f"[{original_path}] Diarization failed: {explain(e)}")
@@ -568,8 +650,8 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="blue")) as demo:
             audio = make_audio_input()
 
 
-            mk = dict(choices=MODEL_CHOICES, value="small", label="ASR model")
-            maybe_info(mk, "Accuracy vs speed trade-off. ‘small’ is fast; ‘large-v3’ best accuracy (needs VRAM).")
+            mk = dict(choices=MODEL_CHOICES, value="auto", label="ASR model")
+            maybe_info(mk, "Auto: turbo on CUDA, small on CPU. Distil models are English-only; large-v3 is the full multilingual model.")
             model_name = gr.Dropdown(**mk)
 
             # keep Language simple, default auto
@@ -596,8 +678,8 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="blue")) as demo:
                 maybe_info(dk, "auto: CUDA if available, else CPU.")
                 device = gr.Radio(**dk)
 
-                pk = dict(choices=DTYPE_CHOICES, value="float16", label="Precision")
-                maybe_info(pk, "GPU: float16 recommended. CPU: int8/float32.")
+                pk = dict(choices=DTYPE_CHOICES, value="auto", label="Precision")
+                maybe_info(pk, "Auto chooses supported GPU precision or CPU int8.")
                 compute_type = gr.Radio(**pk)
 
                 vad_filter = gr.Checkbox(value=True,  label="Voice activity detection")
@@ -630,4 +712,10 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="blue")) as demo:
     clear_tok_btn.click(clear_token_click, inputs=[], outputs=[hf_token, status_md])
 
 if __name__ == "__main__":
-    demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True)
+    import sys
+    if "--self-test" in sys.argv:
+        print("UI initialized; FFmpeg:", ffmpeg_installed())
+        if not ffmpeg_installed():
+            raise SystemExit(1)
+    else:
+        demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True)
