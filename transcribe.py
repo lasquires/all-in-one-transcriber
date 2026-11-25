@@ -205,11 +205,11 @@ def load_pyannote(hf_token: Optional[str], device: str = "cpu"):
     except Exception:
         pass
 
-    try:
+    if device == "cuda":
         import torch
-        if device == "cuda" and torch.cuda.is_available(): pipe.to(torch.device("cuda"))
-    except Exception:
-        pass
+        if not torch.cuda.is_available():
+            raise RuntimeError("PyTorch CUDA is not available for diarization")
+        pipe.to(torch.device("cuda"))
     PYANNOTE_CACHE[device] = pipe
     return pipe
 
@@ -222,13 +222,7 @@ def run_diarization_pyannote(audio_path: str, token: Optional[str], device: str 
     from faster_whisper.audio import decode_audio
     samples = decode_audio(audio_path, sampling_rate=16000)
     source = {"waveform": torch.from_numpy(samples).unsqueeze(0), "sample_rate": 16000}
-    try:
-        result = pipe(source)
-    except (RuntimeError, OSError):
-        if device != "cuda":
-            raise
-        PYANNOTE_CACHE.pop(device, None)
-        result = load_pyannote(token, "cpu")(source)
+    result = pipe(source)
     diar = getattr(result, "exclusive_speaker_diarization", None)
     if diar is None:
         diar = getattr(result, "speaker_diarization", result)
@@ -354,7 +348,7 @@ def resolve_device_and_compute(user_device: str, compute_type: str, log: List[st
             except (OSError, subprocess.SubprocessError):
                 pass
         else:
-            log.append("No usable CUDA device detected; using CPU.")
+            log.append("No usable CUDA device detected. CPU requires explicit approval.")
     if dev == "cuda":
         if compute_type == "auto" or compute_type not in supported:
             for candidate in ("int8_float16", "float16", "int8", "float32"):
@@ -366,6 +360,38 @@ def resolve_device_and_compute(user_device: str, compute_type: str, log: List[st
     elif compute_type != "float32":
         compute_type = "int8"
     return dev, compute_type
+
+
+CPU_NOTICE = (
+    "**CPU processing requires your approval.** CPU transcription can take several times longer "
+    "than GPU transcription, may heavily use your processor, increase heat and battery use, "
+    "and consume substantial RAM for larger models. Auto mode uses the smaller Whisper model "
+    "on CPU.\n\n"
+    "**If you have an NVIDIA GPU:** check that it is enabled in Windows Device Manager, "
+    "update your NVIDIA driver, run `nvidia-smi` in a terminal, and check that the CUDA/cuDNN "
+    "runtime required by CTranslate2 is installed. Restart the app after changing drivers or "
+    "runtime libraries. AMD/Intel GPUs are not accelerated by this CUDA build. "
+    "Then select Auto or CUDA and click Recheck GPU.\n\n"
+    "To proceed on CPU instead, check the acknowledgment below and click Transcribe."
+)
+
+
+def hardware_status(device_choice="auto", enable_diar=False):
+    logs = []
+    dev, precision = resolve_device_and_compute(device_choice, "auto", logs)
+    if dev == "cpu":
+        heading = "### ⚠️ CPU selected" if device_choice == "cpu" else "### ⚠️ GPU acceleration unavailable"
+        return heading + "\n\n" + CPU_NOTICE + "\n\n" + "  \n".join(logs)
+    if enable_diar and not torch_cuda_available():
+        return ("### ⚠️ GPU available for transcription, but not speaker identification\n\n"
+                + CPU_NOTICE + "\n\nInstall a CUDA-enabled matching PyTorch/TorchAudio pair "
+                "to accelerate speaker identification, or turn speaker identification off.")
+    return "### ✅ CUDA GPU detected\n\n" + "  \n".join(logs) + f"\n\nRecommended precision: {precision}. Actual inference will still be checked."
+
+
+def refresh_hardware(device_choice, enable_diar):
+    # Changing settings or explicitly rechecking resets approval.
+    return hardware_status(device_choice, enable_diar), False
 
 
 def read_asr(model, path, language, vad_filter, word_timestamps, beam_size):
@@ -415,22 +441,31 @@ def transcribe(
     vad_filter,
     word_timestamps,
     beam_size,
+    allow_cpu=False,
 ):
     logs: List[str] = []
+    hardware_message = ""
+
+    def blocked(message):
+        try: gr.Warning("CPU processing blocked until you explicitly approve it.")
+        except Exception: pass
+        return ("", None, "", gr.update(value=None, visible=False), gr.update(value=None, visible=False),
+                gr.update(value=None, visible=False), gr.update(value=None, visible=False),
+                "\n".join(logs), message + "\n\n" + CPU_NOTICE, False)
 
     if not ffmpeg_installed():
         logs.append("FFmpeg not found on PATH. Please install FFmpeg (and restart the terminal).")
         try: gr.Error("FFmpeg missing")
         except: pass
         # keep downloads hidden
-        return ("", None, "", None, None, None, None, "\n".join(logs))
+        return ("", None, "", None, None, None, None, "\n".join(logs), gr.update(), False)
 
     # Normalize to a list of paths (gradio gives list[dict] when file_count='multiple')
     if not audio_files:
         logs.append("Please upload/select at least one audio file.")
         try: gr.Error("No audio file selected")
         except: pass
-        return ("", None, "", None, None, None, None, "\n".join(logs))
+        return ("", None, "", None, None, None, None, "\n".join(logs), hardware_message or gr.update(), False)
     file_items = audio_files if isinstance(audio_files, list) else [audio_files]
 
     token_used = (hf_token or "").strip()
@@ -450,7 +485,19 @@ def transcribe(
             logs.append(f"Could not save token: {e}")
 
     device, compute_type = resolve_device_and_compute(device_choice, compute_type_choice, logs)
-    if model_name == "auto":
+    hardware_message = hardware_status(device_choice, enable_diar)
+    if device == "cpu" and not allow_cpu:
+        return blocked("### ⚠️ GPU acceleration unavailable or CPU selected")
+    diar_device = device
+    if enable_diar and device == "cuda" and not torch_cuda_available():
+        if not allow_cpu:
+            return blocked("### ⚠️ Speaker identification requires CPU because PyTorch CUDA is unavailable")
+        diar_device = "cpu"
+        logs.append("CPU speaker identification explicitly approved.")
+    if device == "cpu":
+        logs.append("CPU processing explicitly approved.")
+    automatic_model = model_name == "auto"
+    if automatic_model:
         model_name = "turbo" if device == "cuda" else "small"
     if model_name.startswith("distil-") and language not in ("auto", "en"):
         logs.append("Distilled Whisper is English-only. Switching to multilingual turbo.")
@@ -465,15 +512,21 @@ def transcribe(
         except (RuntimeError, OSError, ValueError) as e:
             if device != "cuda":
                 raise
-            logs.append(f"GPU model load failed ({e}); retrying on CPU/int8.")
-            device, compute_type = "cpu", "int8"
+            logs.append(f"GPU model load failed ({e}).")
+            if not allow_cpu:
+                return blocked("### ⚠️ GPU model initialization failed")
+            logs.append("CPU retry explicitly approved.")
+            hardware_message = "### ⚠️ GPU initialization failed — running on CPU with your approval.\n\n" + CPU_NOTICE
+            device, compute_type, diar_device = "cpu", "int8", "cpu"
+            if automatic_model:
+                model_name = "small"
             model = load_whisper(model_name, device, compute_type)
         logs.append(f"Loaded Whisper model '{model_name}' on {device} ({compute_type}).")
     except Exception as e:
         logs.append(f"Failed to load Whisper: {explain(e)}")
         try: gr.Error("Model load failed")
         except: pass
-        return ("", None, "", None, None, None, None, "\n".join(logs))
+        return ("", None, "", None, None, None, None, "\n".join(logs), hardware_message or gr.update(), False)
 
     total_duration = 0.0
     detected_langs = set()
@@ -503,9 +556,18 @@ def transcribe(
             except (RuntimeError, OSError) as e:
                 if device != "cuda":
                     raise
-                logs.append(f"GPU inference failed ({e}); retrying this file on CPU/int8.")
+                logs.append(f"GPU inference failed ({e}).")
                 MODEL_CACHE.pop((model_name, device, compute_type), None)
-                device, compute_type = "cpu", "int8"
+                if not allow_cpu:
+                    hardware_message = "### ⚠️ GPU inference failed — batch stopped. Previously completed files are retained.\n\n" + CPU_NOTICE
+                    try: gr.Warning("GPU inference failed. Approve CPU processing or recheck your GPU.")
+                    except Exception: pass
+                    break
+                hardware_message = "### ⚠️ GPU inference failed — running on CPU with your approval.\n\n" + CPU_NOTICE
+                logs.append("CPU retry explicitly approved.")
+                device, compute_type, diar_device = "cpu", "int8", "cpu"
+                if automatic_model:
+                    model_name = "small"
                 model = load_whisper(model_name, device, compute_type)
                 asr_segments, info = read_asr(model, in_path, language, vad_filter, word_timestamps, beam_size)
             total_duration += float(info.duration)
@@ -522,7 +584,19 @@ def transcribe(
         diar_segments: List[Dict] = []
         if enable_diar:
             try:
-                diar_segments = run_diarization_pyannote(in_path, token_used, device)
+                try:
+                    diar_segments = run_diarization_pyannote(in_path, token_used, diar_device)
+                except (RuntimeError, OSError):
+                    if diar_device != "cuda":
+                        raise
+                    PYANNOTE_CACHE.pop("cuda", None)
+                    if not allow_cpu:
+                        hardware_message = "### ⚠️ GPU speaker identification failed — CPU retry requires approval. Transcript saved without speaker labels.\n\n" + CPU_NOTICE
+                        raise
+                    hardware_message = "### ⚠️ Speaker identification is using CPU with your approval.\n\n" + CPU_NOTICE
+                    logs.append("CPU diarization retry explicitly approved.")
+                    diar_device = "cpu"
+                    diar_segments = run_diarization_pyannote(in_path, token_used, diar_device)
                 logs.append(f"[{original_path}] Diarization produced {len(diar_segments)} segments.")
             except Exception as e:
                 logs.append(f"[{original_path}] Diarization failed: {explain(e)}")
@@ -530,8 +604,9 @@ def transcribe(
                 except: pass
 
         # --- Merge & write outputs for this file ---
-        asr_segments = assign_speakers(asr_segments, diar_segments, include_speakers=enable_diar)
-        merged = merge_consecutive(asr_segments, include_speakers=enable_diar)
+        has_speakers = bool(enable_diar and diar_segments)
+        asr_segments = assign_speakers(asr_segments, diar_segments, include_speakers=has_speakers)
+        merged = merge_consecutive(asr_segments, include_speakers=has_speakers)
 
         base = os.path.splitext(os.path.basename(original_path))[0]
         out_dir = os.path.join(os.path.dirname(original_path), f"{base}_outputs")
@@ -543,17 +618,17 @@ def transcribe(
             json_path = os.path.join(out_dir, f"{base}.json")
 
             with open(srt_path, "w", encoding="utf-8") as f:
-                f.write(write_srt(merged, include_speakers=enable_diar))
+                f.write(write_srt(merged, include_speakers=has_speakers))
             with open(vtt_path, "w", encoding="utf-8") as f:
-                f.write(write_vtt(merged, include_speakers=enable_diar))
+                f.write(write_vtt(merged, include_speakers=has_speakers))
             with open(txt_path, "w", encoding="utf-8") as f:
                 for s in merged:
-                    if enable_diar and s.get("speaker"):
+                    if has_speakers and s.get("speaker"):
                         f.write(f"{s['speaker']}: {s['text']}\n")
                     else:
                         f.write(f"{s['text']}\n")
             with open(json_path, "w", encoding="utf-8") as f:
-                json.dump({"language": list(detected_langs)[-1] if detected_langs else None,
+                json.dump({"language": info.language,
                            "duration": info.duration, "segments": merged}, f, ensure_ascii=False, indent=2)
 
             srt_paths.append(srt_path); vtt_paths.append(vtt_path)
@@ -561,14 +636,14 @@ def transcribe(
 
             # Per-file HTML section
             section_title = f"<h3>{html_escape(base)}</h3>"
-            html_sections.append(section_title + render_html(merged, include_speakers=enable_diar))
+            html_sections.append(section_title + render_html(merged, include_speakers=has_speakers))
             logs.append(f"[{original_path}] Saved outputs in: {out_dir}")
         except Exception as e:
             logs.append(f"[{original_path}] Failed to save outputs: {explain(e)}")
 
     # If nothing succeeded:
     if not (srt_paths or vtt_paths or txt_paths or json_paths or html_sections):
-        return ("", None, "", None, None, None, None, "\n".join(logs))
+        return ("", None, "", None, None, None, None, "\n".join(logs), hardware_message or gr.update(), False)
 
     # Compose and reveal
     lang_display = (list(detected_langs)[0] if len(detected_langs) == 1 else "multiple")
@@ -583,6 +658,8 @@ def transcribe(
         gr.update(value=txt_paths,  visible=True),
         gr.update(value=json_paths, visible=True),
         "\n".join(logs),
+        hardware_message,
+        False,  # CPU permission is per run, never persisted.
     )
 
 
@@ -692,6 +769,9 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="blue")) as demo:
                 maybe_info(bk, "Higher may improve accuracy slightly (slower).")
                 beam = gr.Slider(**bk)
 
+            hardware_md = gr.Markdown("Checking GPU availability…")
+            allow_cpu = gr.Checkbox(value=False, label="I understand CPU processing may be much slower and use more RAM/power. Allow CPU for this run only.")
+            recheck_gpu = gr.Button("Recheck GPU", variant="secondary")
             run_btn = gr.Button("Transcribe", variant="primary")
 
         with gr.Column(scale=1):
@@ -707,10 +787,14 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="blue")) as demo:
             with gr.Accordion("Status & logs", open=False):
                 status_md = gr.Markdown("")
 
+    demo.load(refresh_hardware, inputs=[device, enable_diar], outputs=[hardware_md, allow_cpu])
+    recheck_gpu.click(refresh_hardware, inputs=[device, enable_diar], outputs=[hardware_md, allow_cpu])
+    device.change(refresh_hardware, inputs=[device, enable_diar], outputs=[hardware_md, allow_cpu])
+    enable_diar.change(refresh_hardware, inputs=[device, enable_diar], outputs=[hardware_md, allow_cpu])
     run_btn.click(
         transcribe,
-        inputs=[audio, model_name, language, enable_diar, hf_token, remember_token, device, compute_type, vad_filter, word_ts, beam],
-        outputs=[lang_out, dur_out, html_out, srt_out, vtt_out, txt_out, json_out, status_md]
+        inputs=[audio, model_name, language, enable_diar, hf_token, remember_token, device, compute_type, vad_filter, word_ts, beam, allow_cpu],
+        outputs=[lang_out, dur_out, html_out, srt_out, vtt_out, txt_out, json_out, status_md, hardware_md, allow_cpu]
     )
     save_tok_btn.click(persist_token, inputs=[hf_token, remember_token], outputs=[hf_token, status_md])
     clear_tok_btn.click(clear_token_click, inputs=[], outputs=[hf_token, status_md])
