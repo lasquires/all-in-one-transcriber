@@ -57,5 +57,64 @@ class ModelTests(unittest.TestCase):
         self.assertIs(got_info, info)
 
 
+
+class ConsentTests(unittest.TestCase):
+    def invoke(self, consent=False, device="auto", model="auto"):
+        return app.transcribe(["test.wav"], model, "en", False, "", False,
+                              device, "auto", True, False, 5, consent)
+
+    @patch.object(app, "ffmpeg_installed", return_value=True)
+    @patch.object(app, "resolve_device_and_compute", return_value=("cpu", "int8"))
+    @patch.object(app, "load_whisper")
+    def test_no_gpu_blocks_before_model_load(self, load, resolve, ffmpeg):
+        result = self.invoke()
+        load.assert_not_called()
+        self.assertEqual(len(result), 10)
+        self.assertIn("CPU processing requires your approval", result[8])
+        self.assertFalse(result[9])
+
+    @patch.object(app, "ffmpeg_installed", return_value=True)
+    @patch.object(app, "resolve_device_and_compute", return_value=("cpu", "int8"))
+    @patch.object(app, "load_whisper", side_effect=RuntimeError("test stop"))
+    def test_approved_cpu_uses_small(self, load, resolve, ffmpeg):
+        result = self.invoke(True)
+        load.assert_called_once_with("small", "cpu", "int8")
+        self.assertFalse(result[9])
+
+    @patch.object(app, "ffmpeg_installed", return_value=True)
+    @patch.object(app, "resolve_device_and_compute", return_value=("cuda", "int8_float16"))
+    @patch.object(app, "load_whisper", side_effect=RuntimeError("missing GPU DLL"))
+    def test_gpu_load_failure_does_not_silently_retry(self, load, resolve, ffmpeg):
+        result = self.invoke()
+        load.assert_called_once_with("turbo", "cuda", "int8_float16")
+        self.assertIn("GPU model initialization failed", result[8])
+        self.assertFalse(result[9])
+
+    @patch.object(app, "ffmpeg_installed", return_value=True)
+    @patch.object(app, "resolve_device_and_compute", return_value=("cuda", "int8_float16"))
+    @patch.object(app, "load_whisper", side_effect=[RuntimeError("GPU failed"), RuntimeError("test stop")])
+    def test_approved_gpu_failure_retries_small_on_cpu(self, load, resolve, ffmpeg):
+        result = self.invoke(True)
+        self.assertEqual(load.call_args_list[-1].args, ("small", "cpu", "int8"))
+        self.assertFalse(result[9])
+
+    @patch.object(app, "ffmpeg_installed", return_value=True)
+    @patch.object(app, "resolve_device_and_compute", return_value=("cuda", "int8_float16"))
+    @patch.object(app, "load_whisper")
+    @patch.object(app, "read_asr", side_effect=RuntimeError("GPU inference failed"))
+    @patch.object(app, "prepare_audio_for_processing", return_value="test.wav")
+    def test_gpu_inference_failure_does_not_retry_without_consent(self, prep, read, load, resolve, ffmpeg):
+        result = self.invoke()
+        load.assert_called_once()
+        read.assert_called_once()
+        self.assertIn("GPU inference failed", result[8])
+        self.assertFalse(result[9])
+
+    @patch.object(app, "resolve_device_and_compute", return_value=("cpu", "int8"))
+    def test_recheck_resets_permission(self, resolve):
+        message, consent = app.refresh_hardware("auto", False)
+        self.assertIn("GPU acceleration unavailable", message)
+        self.assertFalse(consent)
+
 if __name__ == "__main__":
     unittest.main()
