@@ -229,7 +229,9 @@ def run_diarization_pyannote(audio_path: str, token: Optional[str], device: str 
             raise
         PYANNOTE_CACHE.pop(device, None)
         result = load_pyannote(token, "cpu")(source)
-    diar = getattr(result, "exclusive_speaker_diarization", result)
+    diar = getattr(result, "exclusive_speaker_diarization", None)
+    if diar is None:
+        diar = getattr(result, "speaker_diarization", result)
     out = []
     for seg, _, spk in diar.itertracks(yield_label=True):
         out.append({"start": float(seg.start), "end": float(seg.end), "speaker": str(spk)})
@@ -643,7 +645,9 @@ def make_audio_input():
 
 # -------------------- UI --------------------
 with gr.Blocks(theme=gr.themes.Soft(primary_hue="blue")) as demo:
-    gr.Markdown("## 🎙️ Local CUDA Speech-to-Text + Diarization")
+    gr.Markdown("## 🎙️ Local Speech-to-Text + Diarization")
+    if not HAVE_PYANNOTE:
+        gr.Markdown("Speaker labels require the optional pyannote environment; transcription still works.")
 
     with gr.Row():
         with gr.Column(scale=1):
@@ -660,7 +664,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="blue")) as demo:
             language = gr.Dropdown(**lk)
 
             # diarization toggle + token (hidden until on)
-            enable_diar = gr.Checkbox(value=False, label="Enable diarization (speaker labels)")
+            enable_diar = gr.Checkbox(value=False, label="Enable diarization (speaker labels)", interactive=HAVE_PYANNOTE)
             with gr.Row():
                 tk = dict(label="Hugging Face token (for diarization)", type="password", value=load_saved_token(), placeholder="hf_...")
                 maybe_info(tk, "Needed only if diarization is enabled. Scope: read.")
