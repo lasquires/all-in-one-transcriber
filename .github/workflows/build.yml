@@ -32,6 +32,29 @@ jobs:
           python -m py_compile transcribe.py
           python -m unittest discover -s tests -v
           python transcribe.py --self-test
+      - name: Real CPU transcription and export test (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y espeak-ng
+          espeak-ng -w /tmp/transcriber-test.wav "This is a test of speech recognition."
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from transcribe import transcribe
+          source = "/tmp/transcriber-test.wav"
+          blocked = transcribe([source], "tiny", "en", False, "", False, "cpu", "auto", False, True, 5, False)
+          assert "approval" in blocked[8]
+          result = transcribe([source], "tiny", "en", False, "", False, "cpu", "auto", False, True, 5, True)
+          folder = Path("/tmp/transcriber-test_outputs")
+          for ext in ("txt", "srt", "vtt", "json"):
+              assert (folder / f"transcriber-test.{ext}").stat().st_size > 0, result[7]
+          data = json.loads((folder / "transcriber-test.json").read_text())
+          assert data["segments"], result[7]
+          assert "test" in " ".join(s["text"] for s in data["segments"]).lower(), data
+          assert result[9] is False
+          PY
       - name: Build single-file ASR binary
         run: pyinstaller transcribe.py --name Transcriber-ASR-${{ matrix.os }} --onefile --noconfirm --clean --hidden-import backports.tarfile --collect-all faster_whisper --collect-all ctranslate2 --collect-all imageio_ffmpeg --additional-hooks-dir hooks --collect-all gradio --collect-all gradio_client --recursive-copy-metadata gradio --copy-metadata gradio_client --collect-all safehttpx --copy-metadata safehttpx --copy-metadata huggingface_hub --hidden-import anyio --hidden-import starlette --hidden-import websockets --hidden-import pydantic --hidden-import uvicorn
       - name: Smoke test frozen binary
