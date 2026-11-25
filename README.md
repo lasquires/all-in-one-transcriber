@@ -1,3 +1,32 @@
+# Model and hardware update (November 2026)
+
+The existing `environment.yml` and `run_transcribe.bat` remain available for the legacy setup. The application now also supports a separate modern environment with Whisper large-v3-turbo, English-only Distil-Whisper large-v3.5, and pyannote Community-1 (free gated download, local inference). All older Whisper options remain selectable.
+
+**Try the modern environment without modifying your working installation:**
+
+```powershell
+conda env create -f environment-modern.yml
+conda activate transcribe-modern
+python transcribe.py
+```
+
+For CUDA acceleration, install compatible NVIDIA drivers and CUDA runtime libraries for CTranslate2 (CUDA 12.x, see [upstream instructions](https://github.com/SYSTRAN/faster-whisper#gpu)). A CUDA-enabled matching Torch/TorchAudio pair is only needed for GPU diarization. For example, in the modern environment on a supported NVIDIA machine:
+
+```powershell
+python -m pip install --force-reinstall torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+python -m pip check
+```
+
+This does not guarantee the separate CTranslate2 CUDA runtime DLLs are available. The app probes CTranslate2 directly, logs GPU names and VRAM when nvidia-smi is available, chooses supported precision, and offers a CPU/int8 retry for recoverable GPU model/inference errors only after explicit per-run approval. Auto selects turbo on CUDA and small on CPU. The visible hardware banner reports GPU status at startup and after clicking **Recheck GPU**. CPU processing (including CPU-only speaker identification) requires checking the acknowledgment and clicking Transcribe; approval resets after each run or hardware recheck. CPU use can be much slower and consume more RAM, heat and power. On GPU inference failure without approval, the batch stops and previously completed files are retained. A failed diarization step saves the transcript without fabricated speaker labels. AMD/Intel adapters are not accelerated by this standard NVIDIA/CPU build. Select CPU explicitly and acknowledge the warning if drivers cause native crashes.
+
+For modern speaker labels, accept the terms at [Community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) and supply a free read token. The original 3.1 pipeline remains available when using pyannote 3.x. Models are downloaded on first use and cached locally; there is no paid inference API.
+
+**Executable:** the Actions workflow builds and smoke-tests an ASR-only single-file executable for Windows, Linux and macOS. Download a successful Actions artifact (Windows: `Transcriber-ASR-windows-latest.exe`) or a tagged release asset. The lightweight executable intentionally excludes PyTorch and pyannote, so use the Conda launcher for speaker labels. FFmpeg is bundled as a fallback; GPU runtime libraries and model weights are not bundled. A passing smoke test is not a hardware inference test.
+
+---
+
+## Original setup guide (legacy environment)
+
 Here’s a drop-in **README.md** you can ship with your project.
 
 ---
@@ -106,7 +135,7 @@ The Gradio UI opens in your browser.
 The app auto-detects your device:
 
 * If a compatible NVIDIA GPU is present, it uses **CUDA (float16)**.
-* Otherwise it falls back to **CPU** automatically.
+* Otherwise it displays a warning and requires you to approve **CPU** processing before continuing.
 
 ## 4) (Optional) Enable diarization (speaker labels)
 

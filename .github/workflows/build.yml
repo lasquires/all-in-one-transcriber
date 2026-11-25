@@ -1,56 +1,84 @@
 name: build-binaries
 
 on:
+  pull_request:
   push:
     tags: ['v*']
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
-        python: ['3.10']
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
-
-      - name: Install deps
+          python-version: '3.11'
+      - name: Install ASR build dependencies
         run: |
           python -m pip install --upgrade pip wheel
-          pip install pyinstaller faster-whisper imageio-ffmpeg gradio
-
-      - name: Build single-file binary
+          python -m pip install setuptools==80.9.0 backports.tarfile==1.2.0 pyinstaller==6.16.0 faster-whisper==1.2.1 ctranslate2==4.8.5 imageio-ffmpeg==0.6.0 gradio==5.44.1
+          python -m pip check
+      - name: Check source
         run: |
-          pyinstaller all_in_one_transcriber_diar.py \
-            --name Transcriber \
-            --onefile --noconfirm --clean \
-            --collect-all faster_whisper \
-            --collect-all ctranslate2 \
-            --collect-all numpy \
-            --collect-data gradio \
-            --hidden-import anyio \
-            --hidden-import starlette \
-            --hidden-import websockets \
-            --hidden-import pydantic \
-            --hidden-import uvicorn
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+          python -m py_compile transcribe.py
+          python -m unittest discover -s tests -v
+          python transcribe.py --self-test
+      - name: Real CPU transcription and export test (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y espeak-ng
+          espeak-ng -w /tmp/transcriber-test.wav "This is a test of speech recognition."
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from transcribe import transcribe
+          source = "/tmp/transcriber-test.wav"
+          blocked = transcribe([source], "tiny", "en", False, "", False, "cpu", "auto", False, True, 5, False)
+          assert "approval" in blocked[8]
+          result = transcribe([source], "tiny", "en", False, "", False, "cpu", "auto", False, True, 5, True)
+          folder = Path("/tmp/transcriber-test_outputs")
+          for ext in ("txt", "srt", "vtt", "json"):
+              assert (folder / f"transcriber-test.{ext}").stat().st_size > 0, result[7]
+          data = json.loads((folder / "transcriber-test.json").read_text())
+          assert data["segments"], result[7]
+          assert "test" in " ".join(s["text"] for s in data["segments"]).lower(), data
+          assert result[9] is False
+          PY
+      - name: Build single-file ASR binary
+        run: pyinstaller transcribe.py --name Transcriber-ASR-${{ matrix.os }} --onefile --noconfirm --clean --hidden-import backports.tarfile --collect-all faster_whisper --collect-all ctranslate2 --collect-all imageio_ffmpeg --additional-hooks-dir hooks --collect-all gradio --collect-all gradio_client --recursive-copy-metadata gradio --copy-metadata gradio_client --collect-all safehttpx --copy-metadata safehttpx --copy-metadata huggingface_hub --hidden-import anyio --hidden-import starlette --hidden-import websockets --hidden-import pydantic --hidden-import uvicorn
+      - name: Smoke test frozen binary
+        shell: bash
+        run: |
+          binary="dist/Transcriber-ASR-${{ matrix.os }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then binary="$binary.exe"; fi
+          "$binary" --self-test
+      - uses: actions/upload-artifact@v4
         with:
-          name: Transcriber-${{ matrix.os }}
+          name: Transcriber-ASR-${{ matrix.os }}
           path: dist/**
-
-      - name: Create GitHub Release (on tag)
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          files: dist/**
-          draft: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          pattern: Transcriber-ASR-*
+          merge-multiple: true
+          path: release
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*

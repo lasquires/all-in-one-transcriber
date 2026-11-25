@@ -1,0 +1,17 @@
+# New, isolated environment. The original environment.yml is unchanged.
+name: transcribe-modern
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - ffmpeg
+  - pip:
+      - faster-whisper==1.2.1
+      - ctranslate2==4.8.5
+      - gradio==5.44.1
+      - imageio-ffmpeg==0.6.0
+      - torch==2.8.0
+      - torchaudio==2.8.0
+      - torchcodec==0.7.0
+      - pyannote-audio==4.1.1
